@@ -19,18 +19,18 @@ fn main() {
 }
 
 fn build_and_link_xnnpack() {
-    // rust/executorch/ -> repo root is three levels up.
+    // crates/executorch/ -> repo root is two levels up.
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let repo = manifest
         .parent()
         .and_then(|p| p.parent())
         .expect("repo root")
         .to_path_buf();
-    let tp = repo.join("backends/xnnpack/third-party");
+    let tp = repo.join("third-party");
     let xnnpack = tp.join("XNNPACK");
     assert!(
         xnnpack.join("CMakeLists.txt").exists(),
-        "XNNPACK submodule not checked out at {}; run `git submodule update --init --recursive backends/xnnpack/third-party/XNNPACK`",
+        "XNNPACK submodule not checked out at {}; run `git submodule update --init --recursive third-party/XNNPACK`",
         xnnpack.display()
     );
 

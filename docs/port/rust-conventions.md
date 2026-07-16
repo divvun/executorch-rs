@@ -60,7 +60,7 @@ The module tree is pre-generated; fill your assigned files only.
 # Wave-3 test conventions
 
 - A C++ test file `X_test.cpp` for module `M` ports into `#[cfg(test)] mod tests`
-  at the bottom of `rust/executorch/src/<M>.rs`. Port the suite absolutely — no
+  at the bottom of `crates/executorch/src/<M>.rs`. Port the suite absolutely — no
   test dropped; obsolete/flaky ones get ported then `#[ignore]` with a PORT-NOTE.
 - gtest mapping: `TEST(Suite, Name)` → `#[test] fn suite_name()`; `TEST_F`
   fixtures → plain fns calling a `setup()` helper; `EXPECT_EQ/NE/TRUE...` →

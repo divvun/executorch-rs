@@ -1,28 +1,10 @@
-// Porting config — two impl blocks: source-impl (the original,
-// impl-only) and target-impl (the new language, impl + tests).
-// Markup annotates source-impl; translation and tests give each rule
-// a second impl site + a /test facet in target-impl. Narrow the
-// include globs to your real source/target roots as needed.
+// Porting spec config. The upstream C++ sources live in
+// pytorch/executorch (the porting reference, pinned in plan/main.styx);
+// this repo carries only the Rust target-impl.
 specs ({
     name et,
     include (docs/spec/**/*.md),
     impls (
-        {name source-impl, languages (@cpp), include (
-            runtime/**/*.cpp runtime/**/*.h
-            schema/**/*.cpp schema/**/*.h
-            kernels/portable/**/*.cpp kernels/portable/**/*.h
-            kernels/quantized/**/*.cpp kernels/quantized/**/*.h
-            kernels/optimized/**/*.cpp kernels/optimized/**/*.h
-            extension/data_loader/**/*.cpp extension/data_loader/**/*.h
-            extension/module/**/*.cpp extension/module/**/*.h
-            extension/tensor/**/*.cpp extension/tensor/**/*.h
-            backends/xnnpack/runtime/**/*.cpp backends/xnnpack/runtime/**/*.h
-        ), exclude (
-            **/test/** **/testing_util/** **/*_test.cpp **/*_test.h
-            runtime/core/portable_type/c10/**
-            backends/xnnpack/third-party/**
-            kernels/optimized/third-party/**
-        ), mode @impl-only}
-        {name target-impl, languages (@rust), include (rust/**/*.rs), exclude (rust/target/**), mode @both}
+        {name target-impl, languages (@rust), include (crates/**/*.rs), exclude (target/**), mode @both}
     )
 })

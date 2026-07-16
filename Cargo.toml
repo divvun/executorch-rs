@@ -1,5 +1,5 @@
 [workspace]
-members = ["executorch", "executorch-macros"]
+members = ["crates/executorch", "crates/executorch-macros"]
 resolver = "3"
 
 [workspace.package]
