@@ -1,0 +1,96 @@
+//! Literal port of kernels/portable/cpu/op_acos.cpp.
+
+// C++: DEFINE_UNARY_UFUNC_REALHBBF16_TO_FLOATHBF16(acos_out, std::acos)
+// The overloaded `std::acos` resolves to the `float` and `double` variants at
+// the two internal call sites; supplied here as the f32 and f64 versions.
+// [spec:et:def:op-acos.torch.executor.native.acos-out-fn]
+// [spec:et:sem:op-acos.torch.executor.native.acos-out-fn]
+crate::define_unary_ufunc_realhbbf16_to_floathbf16!(acos_out, |x: f32| x.acos(), |x: f64| x.acos());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernels::portable::cpu::pattern::unary_ufunc_realhbbf16_to_floathbf16::test_harness as h;
+
+    fn op_reference(x: f64) -> f64 {
+        x.acos()
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_handle_bool_input() {
+        h::test_bool_input(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_half_output_static_dynamism_support() {
+        h::test_all_real_input_half_output_static_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_bfloat16_output_static_dynamism_support() {
+        h::test_all_real_input_bfloat16_output_static_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    // acos_out forwards to internal::unary_ufunc_realhbbf16_to_floathbf16; this
+    // all-real-input test drives its floating-out-type check, resize, dim-order
+    // check, the nested REALHBBF16/FLOATHBF16 dtype switches, and the float/double
+    // compute-and-narrow path (and its pattern.h re-export).
+    // [spec:et:sem:unary-ufunc-realhbbf16-to-floathbf16.torch.executor.native.internal.unary-ufunc-realhbbf16-to-floathbf16-fn/test]
+    // [spec:et:sem:pattern.torch.executor.native.internal.unary-ufunc-realhbbf16-to-floathbf16-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_float_output_static_dynamism_support() {
+        h::test_all_real_input_float_output_static_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_double_output_static_dynamism_support() {
+        h::test_all_real_input_double_output_static_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_bfloat16_output_bound_dynamism_support() {
+        h::test_all_real_input_bfloat16_output_bound_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_float_output_bound_dynamism_support() {
+        h::test_all_real_input_float_output_bound_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_double_output_bound_dynamism_support() {
+        h::test_all_real_input_double_output_bound_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_float_output_unbound_dynamism_support() {
+        h::test_all_real_input_float_output_unbound_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_real_input_double_output_unbound_dynamism_support() {
+        h::test_all_real_input_double_output_unbound_dynamism_support(acos_out, op_reference);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_all_non_float_output_d_type_dies() {
+        h::test_non_float_output_dtype_dies(acos_out);
+    }
+
+    // [spec:et:sem:op-acos.torch.executor.native.acos-out-fn/test]
+    #[test]
+    fn op_acos_out_test_mismatched_input_shapes_dies() {
+        h::test_mismatched_input_shapes_dies(acos_out);
+    }
+}

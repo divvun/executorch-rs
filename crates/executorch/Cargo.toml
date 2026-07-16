@@ -1,0 +1,51 @@
+[package]
+name = "executorch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Literal Rust port of the ExecuTorch runtime (wave-2 translation)"
+
+[build-dependencies]
+cmake = "0.1"
+
+[dependencies]
+flatbuffers = "25"
+half = "2"
+libc = "0.2"
+# SIMD-accelerated real FFT (runtime SSE/AVX/NEON dispatch via rustfft) for the
+# divvun-speech custom ISTFT op (custom_ops/op_istft.rs) and the optimized
+# _fft_r2c / _fft_c2r kernels (replacing pocketfft).
+realfft = "3"
+# realfft only exposes 1-D real transforms along a contiguous buffer; the
+# optimized _fft_r2c / _fft_c2r kernels also need complex-to-complex transforms
+# along the non-last axes (pocketfft did the whole N-D transform in one call).
+# rustfft (which realfft is built on, so no new transitive cost) supplies the
+# c2c FFTPlanner for those axes.
+rustfft = "6"
+# Pure-Rust SIMD GEMM (runtime NEON/AVX dispatch); backs the optimized
+# cpublas::gemm used by linear/mm/bmm (replacing the Eigen BLAS FFI).
+gemm = "0.18"
+libm = "0.2"
+linkme = "0.3.36"
+executorch-macros = { version = "0.1.0", path = "../executorch-macros" }
+
+[features]
+# `program-verification` mirrors ET_ENABLE_PROGRAM_VERIFICATION (default 1);
+# `deprecated-constant-buffer` mirrors ET_ENABLE_DEPRECATED_CONSTANT_BUFFER
+# (default 1). Both default-on so the literal default build path matches C++.
+default = ["program-verification", "deprecated-constant-buffer"]
+program-verification = []
+deprecated-constant-buffer = []
+xnnpack = []
+# `xnnpack_kleidi` mirrors the C++ ENABLE_XNNPACK_KLEIDI define; gates isQP8 and
+# the convert-node QB4W packing flag in XNNCompiler. Off by default (nothing in
+# the tree enables it yet).
+xnnpack_kleidi = ["xnnpack"]
+aten = []
+android = []
+zephyr = []
+event-tracer = []
+profiling-enabled = []
+# `bundled-program` gates extension/module/bundled_module.rs bodies that depend
+# on devtools/bundled_program (out of wave-2 port scope). Off by default.
+bundled-program = []

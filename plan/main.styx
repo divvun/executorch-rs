@@ -1,0 +1,7 @@
+name executorch
+source {
+    url "git@github.com:pytorch/executorch.git"
+    ref main
+}
+
+children ()

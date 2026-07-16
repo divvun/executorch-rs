@@ -1,0 +1,47 @@
+platforms (
+    {
+        platform "rust"
+        files (rust/**/*.rs rust/**/Cargo.toml)
+        checks {
+            format {
+                cmd "cd rust && cargo fmt --check"
+                fix "cd rust && cargo fmt"
+            }
+            lint {
+                cmd "cargo check --manifest-path rust/Cargo.toml -p executorch --all-features"
+            }
+            test {
+                cmd "cargo test --manifest-path rust/Cargo.toml -p executorch"
+            }
+        }
+    }
+
+    // Upstream C++/Python are touched only by [spec:et:...] annotation
+    // comments and the plan/ helper scripts; upstream's own lintrunner owns
+    // their style, so no checks are gated here.
+    {
+        platform "c++"
+        files (runtime/**/*.cpp runtime/**/*.h kernels/**/*.cpp kernels/**/*.h extension/**/*.cpp extension/**/*.h backends/xnnpack/**/*.cpp backends/xnnpack/**/*.h)
+    }
+
+    {
+        platform "python"
+        files (plan/**/*.py)
+    }
+)
+
+commit {
+    type-prefix "required"
+}
+
+quality {
+    // rust/executorch/src is a literal, bug-for-bug port of the upstream
+    // C++ (rust/PORTING.md); idiomatization is intentionally out of scope,
+    // so file sizes, function counts, complexity and duplication mirror
+    // the C++ sources and the flatc-generated schema code by design.
+    exempt-paths (rust/executorch/src/**)
+}
+
+adoption {
+    scope "porting"
+}
