@@ -401,16 +401,18 @@ impl XNNExecutor {
             return Error::Internal;
         }
 
-        let mut error = self.profiler_.start(context.event_tracer());
+        let error = self.profiler_.start(context.event_tracer());
         if error != Error::Ok {
             crate::et_log!(Error, "Failed to start profiling: {}.", error as u32);
         }
 
         status = unsafe { xnn_invoke_runtime(self.runtime_.get()) };
 
-        error = self.profiler_.end();
-        if error != Error::Ok {
-            crate::et_log!(Error, "Failed to end profiling: {}.", error as u32);
+        if error == Error::Ok {
+            let end_error = self.profiler_.end();
+            if end_error != Error::Ok {
+                crate::et_log!(Error, "Failed to end profiling: {}.", end_error as u32);
+            }
         }
 
         crate::et_check_or_return_error!(

@@ -184,8 +184,8 @@ pub const XNN_INVALID_VALUE_ID: u32 = u32::MAX;
 pub const XNN_VALUE_FLAG_EXTERNAL_INPUT: u32 = 0x00000001;
 /// `#define XNN_VALUE_FLAG_EXTERNAL_OUTPUT 0x00000002`.
 pub const XNN_VALUE_FLAG_EXTERNAL_OUTPUT: u32 = 0x00000002;
-/// `#define XNN_FLAG_BASIC_PROFILING 0x00000010` (runtime creation flag).
-pub const XNN_FLAG_BASIC_PROFILING: u32 = 0x00000010;
+/// `#define XNN_FLAG_BASIC_PROFILING 0x00000008` (runtime creation flag).
+pub const XNN_FLAG_BASIC_PROFILING: u32 = 0x00000008;
 
 /// `#define XNN_MAX_TENSOR_DIMS 6` — maximum tensor rank XNNPACK accepts.
 pub const XNN_MAX_TENSOR_DIMS: usize = 6;
