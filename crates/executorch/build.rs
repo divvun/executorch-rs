@@ -55,18 +55,51 @@ fn build_and_link_xnnpack() {
         .define("FP16_SOURCE_DIR", tp.join("FP16"))
         .define("FXDIV_SOURCE_DIR", tp.join("FXdiv"));
 
+    // Match XNNPACK's MSVC runtime library to the Rust binary's CRT. The build
+    // script sees `+crt-static` (from RUSTFLAGS / .cargo/config.toml) via
+    // CARGO_CFG_TARGET_FEATURE. Otherwise CMake's CMP0091 default links the
+    // dynamic runtime (/MD), whose `__declspec(dllimport)` CRT references
+    // (atan2f, _wassert, …) fail to resolve against a static-CRT Rust binary.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let crt_static = std::env::var("CARGO_CFG_TARGET_FEATURE")
+            .map(|feats| feats.split(',').any(|f| f == "crt-static"))
+            .unwrap_or(false);
+        cfg.define("CMAKE_POLICY_DEFAULT_CMP0091", "NEW").define(
+            "CMAKE_MSVC_RUNTIME_LIBRARY",
+            if crt_static {
+                "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+            } else {
+                "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+            },
+        );
+    }
+
     // XNNPACK only installs libXNNPACK.a + libxnnpack-microkernels-prod.a, but
     // cpuinfo/pthreadpool archives land in the build tree. Build without the
     // install step and link straight out of the build directory.
     let dst = cfg.build_target("XNNPACK").build();
     let build = dst.join("build");
 
-    // The two XNNPACK archives plus its object-library deps.
+    // The two XNNPACK archives plus its object-library deps. Single-config
+    // generators (Ninja/Make) drop the archives straight into each directory;
+    // MSVC multi-config generators (Visual Studio) nest them in a per-config
+    // subdir (Debug / Release / RelWithDebInfo), which the cmake crate selects
+    // from the cargo profile. Emit both layouts — the linker ignores search
+    // paths that don't exist, and only the built config's subdir is present.
+    let is_msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    let configs: &[&str] = if is_msvc {
+        &["", "RelWithDebInfo", "Release", "Debug", "MinSizeRel"]
+    } else {
+        &[""]
+    };
     for dir in ["", "cpuinfo", "pthreadpool"] {
-        println!(
-            "cargo:rustc-link-search=native={}",
-            build.join(dir).display()
-        );
+        let base = build.join(dir);
+        for config in configs {
+            println!(
+                "cargo:rustc-link-search=native={}",
+                base.join(config).display()
+            );
+        }
     }
     println!("cargo:rustc-link-lib=static=XNNPACK");
     println!("cargo:rustc-link-lib=static=xnnpack-microkernels-prod");
