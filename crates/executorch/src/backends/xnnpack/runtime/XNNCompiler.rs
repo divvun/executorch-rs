@@ -2558,7 +2558,7 @@ impl XNNCompiler {
         }
         let mut runtime_flags: u32 = 0;
 
-        #[cfg(any(feature = "xnnpack_profiling", feature = "event_tracer"))]
+        #[cfg(any(feature = "profiling-enabled", feature = "event-tracer"))]
         {
             runtime_flags |= sys::XNN_FLAG_BASIC_PROFILING;
         }

@@ -806,9 +806,20 @@ pub fn get_pthreadpool() -> pthreadpool_t {
     if !existing.is_null() {
         return pthreadpool_t(existing);
     }
-    // SAFETY: pthreadpool_create is the linked libpthreadpool entry point; 0 =
-    // auto-size to logical cores.
-    let created = unsafe { pthreadpool_create(0) };
+    // Read once, before the first XNNPACK runtime is created. Zero retains the
+    // upstream default of one worker per logical processor.
+    let threads_count = std::env::var("EXECUTORCH_XNNPACK_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    crate::et_log!(
+        Info,
+        "Creating the process-wide XNNPACK thread pool with {} threads (0 = auto)",
+        threads_count
+    );
+
+    // SAFETY: pthreadpool_create is the linked libpthreadpool entry point.
+    let created = unsafe { pthreadpool_create(threads_count) };
     match POOL.compare_exchange(
         core::ptr::null_mut(),
         created.0,
