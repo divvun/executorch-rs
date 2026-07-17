@@ -392,11 +392,11 @@ impl DataLoader for FileDataLoader {
             let chunk_size: usize = core::cmp::min(needed, i32::MAX as usize);
             let nread: isize = if ET_HAVE_PREAD {
                 unsafe {
-                    libc::pread(
+                    platform_pread(
                         dup_fd,
                         buf as *mut core::ffi::c_void,
                         chunk_size,
-                        offset as libc::off_t,
+                        offset,
                     )
                 }
             } else if unsafe { libc::lseek(dup_fd, offset as libc::off_t, libc::SEEK_SET) }
@@ -404,7 +404,7 @@ impl DataLoader for FileDataLoader {
             {
                 -1
             } else {
-                unsafe { libc::read(dup_fd, buf as *mut core::ffi::c_void, chunk_size) }
+                unsafe { platform_read(dup_fd, buf as *mut core::ffi::c_void, chunk_size) }
             };
             if nread < 0 && errno() == libc::EINTR {
                 // Interrupted by a signal; zero bytes read.
@@ -445,6 +445,40 @@ impl DataLoader for FileDataLoader {
     }
 }
 
+// Positioned read normalized to the POSIX `pread` shape. On unix this is
+// `libc::pread`; on Windows it forwards to the `compat_unistd` Win64 shim
+// (`ReadFile`/`GetOverlappedResult`), mirroring the C++ `compat_unistd.h`.
+#[cfg(unix)]
+unsafe fn platform_pread(
+    fd: libc::c_int,
+    buf: *mut core::ffi::c_void,
+    count: usize,
+    offset: usize,
+) -> isize {
+    unsafe { libc::pread(fd, buf, count, offset as libc::off_t) }
+}
+#[cfg(windows)]
+unsafe fn platform_pread(
+    fd: libc::c_int,
+    buf: *mut core::ffi::c_void,
+    count: usize,
+    offset: usize,
+) -> isize {
+    crate::runtime::platform::compat_unistd::pread(fd, buf, count, offset)
+}
+
+// Sequential read normalized to the POSIX `ssize_t` shape. On Windows,
+// `libc::read` takes a `c_uint` count and returns `c_int`; the chunk size is
+// capped at `i32::MAX` by the caller, so the narrowing cast is lossless.
+#[cfg(unix)]
+unsafe fn platform_read(fd: libc::c_int, buf: *mut core::ffi::c_void, count: usize) -> isize {
+    unsafe { libc::read(fd, buf, count) }
+}
+#[cfg(windows)]
+unsafe fn platform_read(fd: libc::c_int, buf: *mut core::ffi::c_void, count: usize) -> isize {
+    unsafe { libc::read(fd, buf, count as u32) as isize }
+}
+
 // PORT-NOTE: helpers backing the C++ `%s`/`strerror(errno)`/`errno` log
 // substitutions. `c_str` renders a C string pointer for `{}`; `errno` /
 // `errno_str` mirror the thread-local `errno` and `strerror(errno)`.
@@ -466,9 +500,20 @@ unsafe fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 unsafe fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__error() }
+}
+
+#[cfg(windows)]
+unsafe fn errno_location() -> *mut libc::c_int {
+    // MSVCRT exposes the thread-local errno via `_errno()`; the `libc` crate
+    // does not re-export it on Windows, so declare the accessor locally
+    // (mirrors mman_windows.rs / compat_unistd.rs).
+    unsafe extern "C" {
+        fn _errno() -> *mut libc::c_int;
+    }
+    unsafe { _errno() }
 }
 
 fn errno_str() -> std::string::String {

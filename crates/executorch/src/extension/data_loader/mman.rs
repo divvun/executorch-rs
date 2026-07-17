@@ -99,8 +99,12 @@ pub fn get_os_page_size() -> libc::c_long {
 
 #[cfg(windows)]
 pub fn get_file_stat(fd: libc::c_int, out_size: &mut usize) -> libc::c_int {
-    let mut st: libc::stat64 = unsafe { core::mem::zeroed() };
-    let err = unsafe { libc::fstat64(fd, &mut st) };
+    // PORT-NOTE: `libc` does not expose `stat64`/`fstat64` on Windows. Its
+    // `stat`/`fstat` already link to the MSVCRT `_stat64`/`_fstat64` variants
+    // (`st_size` is `i64`), so they carry the 64-bit size the C++ `fstat64`
+    // provided.
+    let mut st: libc::stat = unsafe { core::mem::zeroed() };
+    let err = unsafe { libc::fstat(fd, &mut st) };
     if err >= 0 {
         *out_size = st.st_size as usize;
     }

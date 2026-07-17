@@ -360,11 +360,11 @@ impl DataLoader for FileDescriptorDataLoader {
             // Reads on macOS will fail with EINVAL if size > INT32_MAX.
             let chunk_size: usize = core::cmp::min(needed, i32::MAX as usize);
             let nread: isize = unsafe {
-                libc::pread(
+                platform_pread(
                     self.fd_,
                     buf as *mut core::ffi::c_void,
                     chunk_size,
-                    offset as libc::off_t,
+                    offset,
                 )
             };
             if nread < 0 && errno() == libc::EINTR {
@@ -396,6 +396,28 @@ impl DataLoader for FileDescriptorDataLoader {
     }
 }
 
+// Positioned read normalized to the POSIX `pread` shape. On unix this is
+// `libc::pread`; on Windows it forwards to the `compat_unistd` Win64 shim
+// (`ReadFile`/`GetOverlappedResult`), mirroring the C++ `compat_unistd.h`.
+#[cfg(unix)]
+unsafe fn platform_pread(
+    fd: libc::c_int,
+    buf: *mut core::ffi::c_void,
+    count: usize,
+    offset: usize,
+) -> isize {
+    unsafe { libc::pread(fd, buf, count, offset as libc::off_t) }
+}
+#[cfg(windows)]
+unsafe fn platform_pread(
+    fd: libc::c_int,
+    buf: *mut core::ffi::c_void,
+    count: usize,
+    offset: usize,
+) -> isize {
+    crate::runtime::platform::compat_unistd::pread(fd, buf, count, offset)
+}
+
 // PORT-NOTE: helpers backing the C++ `%s`/`strerror(errno)`/`errno` log
 // substitutions (see file_data_loader.rs for the same shape).
 fn c_str(ptr: *const core::ffi::c_char) -> std::string::String {
@@ -416,9 +438,20 @@ unsafe fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 unsafe fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__error() }
+}
+
+#[cfg(windows)]
+unsafe fn errno_location() -> *mut libc::c_int {
+    // MSVCRT exposes the thread-local errno via `_errno()`; the `libc` crate
+    // does not re-export it on Windows, so declare the accessor locally
+    // (mirrors mman_windows.rs / compat_unistd.rs).
+    unsafe extern "C" {
+        fn _errno() -> *mut libc::c_int;
+    }
+    unsafe { _errno() }
 }
 
 fn errno_str() -> std::string::String {

@@ -114,7 +114,7 @@ struct SYSTEM_INFO {
     w_processor_revision: u16,
 }
 
-extern "system" {
+unsafe extern "system" {
     fn GetLastError() -> DWORD;
     fn GetCurrentProcess() -> HANDLE;
     fn GetSystemInfo(lp_system_info: *mut SYSTEM_INFO);
@@ -156,13 +156,13 @@ extern "system" {
     fn CloseHandle(h_object: HANDLE) -> BOOL;
 }
 
-extern "C" {
+unsafe extern "C" {
     fn _get_osfhandle(fd: i32) -> isize;
 }
 
 // PORT-NOTE: `errno` is accessed via the MSVCRT `_errno()` accessor so writes
 // are visible to callers checking `errno`, mirroring the C++ `errno = ...`.
-extern "C" {
+unsafe extern "C" {
     fn _errno() -> *mut i32;
 }
 #[inline]

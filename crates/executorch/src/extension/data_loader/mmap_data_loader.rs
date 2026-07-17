@@ -516,9 +516,20 @@ unsafe fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
 unsafe fn errno_location() -> *mut libc::c_int {
     unsafe { libc::__error() }
+}
+
+#[cfg(windows)]
+unsafe fn errno_location() -> *mut libc::c_int {
+    // MSVCRT exposes the thread-local errno via `_errno()`; the `libc` crate
+    // does not re-export it on Windows, so declare the accessor locally
+    // (mirrors mman_windows.rs / compat_unistd.rs).
+    unsafe extern "C" {
+        fn _errno() -> *mut libc::c_int;
+    }
+    unsafe { _errno() }
 }
 
 fn errno_str() -> std::string::String {
