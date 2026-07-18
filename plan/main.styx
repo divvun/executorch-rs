@@ -1,7 +1,55 @@
 name executorch
+
 source {
     url "git@github.com:pytorch/executorch.git"
     ref ec52125f1cdc8e35d3f140ee635e006fee25d554
 }
 
-children ()
+children (
+    {
+        id quiet-kernel-registration
+        title "Silence idempotent kernel-registration probes"
+        priority 0
+        children (
+            {
+                id quiet-kernel-registration-spec
+                title "Specify quiet idempotent registration"
+                priority 0
+                sealed true
+                log (
+                    {
+                        at 2026-07-18T16:51:01.369185Z
+                        author "brendan@necessary.nu"
+                        kind @status
+                        text "Todo → Doing (nplan start)"
+                    }
+
+                    {
+                        at 2026-07-18T16:51:34.043885Z
+                        author "brendan@necessary.nu"
+                        kind @status
+                        text "Doing → Done (nplan complete)"
+                    }
+                )
+            }
+
+            {
+                id quiet-kernel-registration-implementation
+                title "Use a quiet fallback-kernel probe"
+                priority 0
+                implements {
+                    target-impl ([spec:et:req:kernel-registration.quiet-idempotent-probe])
+                }
+                deps (quiet-kernel-registration-spec)
+                log (
+                    {
+                        at 2026-07-18T16:51:59.222921Z
+                        author "brendan@necessary.nu"
+                        kind @status
+                        text "Todo → Doing (nplan start)"
+                    }
+                )
+            }
+        )
+    }
+)
