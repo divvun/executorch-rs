@@ -37,6 +37,9 @@ default = ["program-verification", "deprecated-constant-buffer"]
 program-verification = []
 deprecated-constant-buffer = []
 xnnpack = []
+# Enables XNNPACK's per-operator runtime timings without enabling the broader
+# ExecuTorch platform profiler.
+xnnpack-profiling = ["xnnpack"]
 # `xnnpack_kleidi` mirrors the C++ ENABLE_XNNPACK_KLEIDI define; gates isQP8 and
 # the convert-node QB4W packing flag in XNNCompiler. Off by default (nothing in
 # the tree enables it yet).

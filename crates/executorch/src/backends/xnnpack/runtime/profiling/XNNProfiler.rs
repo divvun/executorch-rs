@@ -6,11 +6,8 @@
 //!     defined(ET_EVENT_TRACER_ENABLED) || defined(ENABLE_XNNPACK_PROFILING)`,
 //!   * a "stub" shape otherwise, whose methods just return `Error::Ok`.
 //! These map to the crate features `event-tracer` (ET_EVENT_TRACER_ENABLED) and
-//! `profiling-enabled` (ENABLE_XNNPACK_PROFILING). The whole real body sits
-//! behind `any(feature = "event-tracer", feature = "profiling-enabled")`; the
-//! else-branch mirrors the stub. Within the real body, the extra running-average
-//! logging in `log_operator_timings` is further gated on `profiling-enabled`,
-//! exactly matching the inner `#ifdef ENABLE_XNNPACK_PROFILING`.
+//! `xnnpack-profiling` (ENABLE_XNNPACK_PROFILING). The legacy broad
+//! `profiling-enabled` feature also enables this code for compatibility.
 //!
 //! Depends on the XNNPACK C API (`xnn_runtime_t`, profiling queries), so the
 //! module is gated behind the `xnnpack` feature.
@@ -21,7 +18,11 @@ use crate::runtime::core::error::Error;
 use crate::runtime::core::event_tracer::EventTracer;
 
 // [spec:et:def:xnn-profiler.executorch.backends.xnnpack.delegate.profiling.xnn-profiler-state]
-#[cfg(any(feature = "event-tracer", feature = "profiling-enabled"))]
+#[cfg(any(
+    feature = "event-tracer",
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled"
+))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum XNNProfilerState {
     Uninitialized,
@@ -29,7 +30,11 @@ pub enum XNNProfilerState {
     Running,
 }
 
-#[cfg(any(feature = "event-tracer", feature = "profiling-enabled"))]
+#[cfg(any(
+    feature = "event-tracer",
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled"
+))]
 mod imp {
     use super::*;
     use crate::backends::xnnpack::runtime::sys::{
@@ -71,7 +76,7 @@ mod imp {
 
         // State needed to track average timing. Only used when
         // ENABLE_XNNPACK_PROFILING is defined.
-        #[cfg(feature = "profiling-enabled")]
+        #[cfg(any(feature = "xnnpack-profiling", feature = "profiling-enabled"))]
         op_timings_sum_: Vec<u64>,
     }
 
@@ -94,7 +99,7 @@ mod imp {
                 op_timings_: Vec::new(),
                 run_count_: 0,
                 start_time_: 0,
-                #[cfg(feature = "profiling-enabled")]
+                #[cfg(any(feature = "xnnpack-profiling", feature = "profiling-enabled"))]
                 op_timings_sum_: Vec::new(),
             }
         }
@@ -257,7 +262,7 @@ mod imp {
 
         // [spec:et:def:xnn-profiler.executorch.backends.xnnpack.delegate.profiling.xnn-profiler.log-operator-timings-fn]
         // [spec:et:sem:xnn-profiler.executorch.backends.xnnpack.delegate.profiling.xnn-profiler.log-operator-timings-fn]
-        #[cfg(feature = "profiling-enabled")]
+        #[cfg(any(feature = "xnnpack-profiling", feature = "profiling-enabled"))]
         fn log_operator_timings(&mut self) {
             // Update running average state and log average timing for each op.
             self.run_count_ += 1;
@@ -276,6 +281,15 @@ mod imp {
                 let avg_op_time = self.op_timings_sum_[i] as f32 / self.run_count_ as f32;
                 total_time += avg_op_time;
 
+                #[cfg(feature = "xnnpack-profiling")]
+                eprintln!(
+                    ">>, {}, {} ({})",
+                    op_name, self.op_timings_[i], avg_op_time
+                );
+                #[cfg(all(
+                    feature = "profiling-enabled",
+                    not(feature = "xnnpack-profiling")
+                ))]
                 crate::et_log!(
                     Info,
                     ">>, {}, {} ({})",
@@ -284,10 +298,16 @@ mod imp {
                     avg_op_time
                 );
             }
+            #[cfg(feature = "xnnpack-profiling")]
+            eprintln!(">>, Total Time, {}", total_time);
+            #[cfg(all(
+                feature = "profiling-enabled",
+                not(feature = "xnnpack-profiling")
+            ))]
             crate::et_log!(Info, ">>, Total Time, {}", total_time);
         }
 
-        #[cfg(not(feature = "profiling-enabled"))]
+        #[cfg(not(any(feature = "xnnpack-profiling", feature = "profiling-enabled")))]
         fn log_operator_timings(&mut self) {
             self.run_count_ += 1;
         }
@@ -499,13 +519,21 @@ mod imp {
     }
 }
 
-#[cfg(any(feature = "event-tracer", feature = "profiling-enabled"))]
+#[cfg(any(
+    feature = "event-tracer",
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled"
+))]
 pub use imp::XNNProfiler;
 
 // ------------------------------------------------------------------------
 // Stub implementation for when profiling is disabled (`#else` branch).
 // ------------------------------------------------------------------------
-#[cfg(not(any(feature = "event-tracer", feature = "profiling-enabled")))]
+#[cfg(not(any(
+    feature = "event-tracer",
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled"
+)))]
 mod stub {
     use super::*;
     use crate::backends::xnnpack::runtime::sys::xnn_runtime_t;
@@ -548,7 +576,11 @@ mod stub {
     }
 }
 
-#[cfg(not(any(feature = "event-tracer", feature = "profiling-enabled")))]
+#[cfg(not(any(
+    feature = "event-tracer",
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled"
+)))]
 pub use stub::XNNProfiler;
 
 // ------------------------------------------------------------------------
@@ -570,7 +602,11 @@ pub use stub::XNNProfiler;
 #[cfg(all(
     test,
     feature = "xnnpack",
-    any(feature = "event-tracer", feature = "profiling-enabled")
+    any(
+        feature = "event-tracer",
+        feature = "xnnpack-profiling",
+        feature = "profiling-enabled"
+    )
 ))]
 mod tests {
     use super::*;
@@ -927,7 +963,11 @@ mod tests {
 #[cfg(all(
     test,
     feature = "xnnpack",
-    not(any(feature = "event-tracer", feature = "profiling-enabled"))
+    not(any(
+        feature = "event-tracer",
+        feature = "xnnpack-profiling",
+        feature = "profiling-enabled"
+    ))
 ))]
 mod stub_tests {
     use super::*;

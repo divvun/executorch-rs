@@ -20,6 +20,34 @@ use crate::backends::xnnpack::runtime::sys::{self, xnn_datatype, xnn_subgraph_t}
 extern crate std;
 use std::string::String;
 
+#[cfg(any(
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled",
+    feature = "event-tracer"
+))]
+fn profile_runtime_enabled() -> bool {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_RUNTIME_INDEX: AtomicUsize = AtomicUsize::new(0);
+    let index = NEXT_RUNTIME_INDEX.fetch_add(1, Ordering::Relaxed);
+    let start = std::env::var("EXECUTORCH_XNNPACK_PROFILE_START")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let count = std::env::var("EXECUTORCH_XNNPACK_PROFILE_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(usize::MAX);
+    let enabled = index >= start && index.saturating_sub(start) < count;
+
+    if std::env::var_os("EXECUTORCH_XNNPACK_PROFILE_START").is_some()
+        || std::env::var_os("EXECUTORCH_XNNPACK_PROFILE_COUNT").is_some()
+    {
+        eprintln!("XNN_PROFILE_RUNTIME index={index} enabled={enabled}");
+    }
+    enabled
+}
+
 // PORT-NOTE: `ENABLE_XNNPACK_KLEIDI` gates `isQP8` and the extra convert-node
 // flag. Mirror it as a cargo feature `xnnpack_kleidi`; nothing in the tree
 // enables it yet, so the gated code compiles only when that feature is on.
@@ -2557,9 +2585,21 @@ impl XNNCompiler {
             }
         }
         let mut runtime_flags: u32 = 0;
+        #[cfg(not(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        )))]
+        let profile_runtime = false;
 
-        #[cfg(any(feature = "profiling-enabled", feature = "event-tracer"))]
-        {
+        #[cfg(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        ))]
+        let profile_runtime = profile_runtime_enabled();
+
+        if profile_runtime {
             runtime_flags |= sys::XNN_FLAG_BASIC_PROFILING;
         }
 
@@ -2623,6 +2663,7 @@ impl XNNCompiler {
                 input_ids,
                 output_ids,
                 packed_weights_names,
+                profile_runtime,
             )
         };
 

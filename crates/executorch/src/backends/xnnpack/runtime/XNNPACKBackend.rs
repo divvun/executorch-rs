@@ -372,7 +372,7 @@ mod backend {
                     _lock_weights_cache = Some(guard);
                 }
 
-                #[cfg(feature = "profiling-enabled")]
+                #[cfg(any(feature = "profiling-enabled", feature = "xnnpack-profiling"))]
                 unsafe {
                     (*executor).print_avg_op_timings();
                 }

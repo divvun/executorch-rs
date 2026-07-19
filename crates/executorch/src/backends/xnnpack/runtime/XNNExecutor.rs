@@ -34,6 +34,54 @@ use crate::runtime::core::span::Span;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(any(
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled",
+    feature = "event-tracer"
+))]
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(any(
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled",
+    feature = "event-tracer"
+))]
+struct ProfilerRegistry {
+    by_runtime: std::collections::HashMap<usize, XNNProfiler>,
+}
+
+// Each runtime is already serialized by its executor/workspace contract. The
+// registry moves profiler state out of the method's bounded runtime allocator,
+// whose size must not depend on optional profiling fields.
+#[cfg(any(
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled",
+    feature = "event-tracer"
+))]
+unsafe impl Send for ProfilerRegistry {}
+
+#[cfg(any(
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled",
+    feature = "event-tracer"
+))]
+fn profiler_registry() -> &'static Mutex<ProfilerRegistry> {
+    static REGISTRY: OnceLock<Mutex<ProfilerRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        Mutex::new(ProfilerRegistry {
+            by_runtime: std::collections::HashMap::new(),
+        })
+    })
+}
+
+#[cfg(any(
+    feature = "xnnpack-profiling",
+    feature = "profiling-enabled",
+    feature = "event-tracer"
+))]
+fn runtime_key(runtime: xnn_runtime_t) -> usize {
+    runtime.0 as usize
+}
 
 // PORT-NOTE: `ET_DCHECK_MSG` — debug-only assert. Not exported crate-wide;
 // mirrored locally over `debug_assert!` (elided in release, exactly like the
@@ -120,6 +168,11 @@ unsafe impl Sync for RuntimePtr {}
 pub struct XNNExecutor {
     runtime_: RuntimePtr,
 
+    #[cfg(not(any(
+        feature = "xnnpack-profiling",
+        feature = "profiling-enabled",
+        feature = "event-tracer"
+    )))]
     profiler_: XNNProfiler,
     input_ids_: Vec<u32>,
     output_ids_: Vec<u32>,
@@ -142,6 +195,11 @@ impl XNNExecutor {
     pub fn new(workspace: Arc<XNNWorkspace>) -> Self {
         XNNExecutor {
             runtime_: RuntimePtr::null(),
+            #[cfg(not(any(
+                feature = "xnnpack-profiling",
+                feature = "profiling-enabled",
+                feature = "event-tracer"
+            )))]
             profiler_: XNNProfiler::new(),
             input_ids_: Vec::new(),
             output_ids_: Vec::new(),
@@ -162,7 +220,7 @@ impl XNNExecutor {
     // compilable under the equivalent `profiling-enabled` feature, this
     // no-op method is provided under the same cfg. It should be reconciled with
     // the C++ once the upstream definition (or the dead call) is resolved.
-    #[cfg(feature = "profiling-enabled")]
+    #[cfg(any(feature = "profiling-enabled", feature = "xnnpack-profiling"))]
     pub fn print_avg_op_timings(&mut self) {}
 
     // [spec:et:def:xnn-executor.executorch.backends.xnnpack.delegate.xnn-executor.get-num-inputs-fn]
@@ -239,13 +297,34 @@ impl XNNExecutor {
         input_ids: Vec<u32>,
         output_ids: Vec<u32>,
         packed_data_names: Vec<String>,
+        enable_profiling: bool,
     ) -> Error {
         self.runtime_ = RuntimePtr(runtime);
 
-        let error = self.profiler_.initialize(runtime);
-        if error != Error::Ok {
-            crate::et_log!(Error, "Failed to start profiling: {}.", error as u32);
+        #[cfg(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        ))]
+        if enable_profiling {
+            let mut profiler = XNNProfiler::new();
+            let error = profiler.initialize(runtime);
+            if error != Error::Ok {
+                crate::et_log!(Error, "Failed to initialize profiling: {}.", error as u32);
+            } else {
+                profiler_registry()
+                    .lock()
+                    .unwrap()
+                    .by_runtime
+                    .insert(runtime_key(runtime), profiler);
+            }
         }
+        #[cfg(not(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        )))]
+        let _ = enable_profiling;
 
         // Initialize the external values for inputs and outputs mapping the
         // executorch arg idx to external IDs.
@@ -401,17 +480,42 @@ impl XNNExecutor {
             return Error::Internal;
         }
 
-        let error = self.profiler_.start(context.event_tracer());
-        if error != Error::Ok {
-            crate::et_log!(Error, "Failed to start profiling: {}.", error as u32);
-        }
+        #[cfg(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        ))]
+        let profiling_started = profiler_registry()
+            .lock()
+            .unwrap()
+            .by_runtime
+            .get_mut(&runtime_key(self.runtime_.get()))
+            .is_some_and(|profiler| {
+                let error = profiler.start(context.event_tracer());
+                if error != Error::Ok {
+                    crate::et_log!(Error, "Failed to start profiling: {}.", error as u32);
+                }
+                error == Error::Ok
+            });
 
         status = unsafe { xnn_invoke_runtime(self.runtime_.get()) };
 
-        if error == Error::Ok {
-            let end_error = self.profiler_.end();
-            if end_error != Error::Ok {
-                crate::et_log!(Error, "Failed to end profiling: {}.", end_error as u32);
+        #[cfg(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        ))]
+        if profiling_started {
+            if let Some(profiler) = profiler_registry()
+                .lock()
+                .unwrap()
+                .by_runtime
+                .get_mut(&runtime_key(self.runtime_.get()))
+            {
+                let end_error = profiler.end();
+                if end_error != Error::Ok {
+                    crate::et_log!(Error, "Failed to end profiling: {}.", end_error as u32);
+                }
             }
         }
 
@@ -532,6 +636,16 @@ impl Drop for XNNExecutor {
             !self.in_use_.load(Ordering::Acquire),
             "XNNExecutor destroyed while in use"
         );
+        #[cfg(any(
+            feature = "xnnpack-profiling",
+            feature = "profiling-enabled",
+            feature = "event-tracer"
+        ))]
+        profiler_registry()
+            .lock()
+            .unwrap()
+            .by_runtime
+            .remove(&runtime_key(self.runtime_.get()));
         self.destroyed_.store(true, Ordering::Release);
     }
 }
@@ -785,7 +899,10 @@ mod tests {
             assert_eq!(xnn_create_runtime(subgraph, &mut rt), xnn_status_success);
         }
 
-        assert_eq!(executor.initialize(rt, vec![0], vec![1], vec![]), Error::Ok);
+        assert_eq!(
+            executor.initialize(rt, vec![0], vec![1], vec![], false),
+            Error::Ok
+        );
 
         let tf = TensorFactory::<i32>::new();
         let input_tensor = tf.make(
@@ -884,7 +1001,7 @@ mod tests {
         }
 
         assert_eq!(
-            executor.initialize(rt, vec![0], vec![1, 2], vec![]),
+            executor.initialize(rt, vec![0], vec![1, 2], vec![], false),
             Error::Ok
         );
 
