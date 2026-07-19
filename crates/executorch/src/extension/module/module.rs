@@ -1004,6 +1004,19 @@ impl<'a> Module<'a> {
         )
     }
 
+    /// Load a method using the module's configured allocator, backend options,
+    /// and event tracer without executing it.
+    #[must_use]
+    pub fn load_method_with_defaults(&mut self, method_name: &str) -> Error {
+        self.load_method(
+            method_name,
+            core::ptr::null_mut(),
+            null_event_tracer(),
+            core::ptr::null(),
+            Vec::new(),
+        )
+    }
+
     /// Unload a specific method from the program.
     // [spec:et:def:module.executorch.extension.et-module-namespace.module.unload-method-fn]
     // [spec:et:sem:module.executorch.extension.et-module-namespace.module.unload-method-fn]
