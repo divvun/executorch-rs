@@ -12,6 +12,7 @@
 
 pub mod op_istft;
 pub mod op_layer_norm;
+pub(crate) mod parallel;
 
 use crate::runtime::core::error::Error;
 use crate::runtime::core::span::Span;

@@ -2650,11 +2650,13 @@ impl XNNCompiler {
                 "Failed to finalize weights cache after creating the xnn runtime"
             );
             packed_weights_names = packed_weights_names_result.unwrap();
-        } else {
-            for buffer in unpacked_buffers.iter_mut() {
-                buffer.free();
-            }
         }
+        // PORT-NOTE (deviation from C++): the C++ frees unpacked_buffers here,
+        // violating xnnpack.h's contract that static tensor data outlive the
+        // Runtime (upstream survives only because its named-data constants all
+        // feed weight-packing consumers). Constants feeding binary/elementwise
+        // ops are read at invoke time, so the buffers are moved into the
+        // executor and live until delegate destroy.
 
         err = unsafe {
             (*executor).initialize(
@@ -2663,6 +2665,7 @@ impl XNNCompiler {
                 input_ids,
                 output_ids,
                 packed_weights_names,
+                unpacked_buffers,
                 profile_runtime,
             )
         };

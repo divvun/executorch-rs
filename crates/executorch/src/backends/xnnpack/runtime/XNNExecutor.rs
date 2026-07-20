@@ -28,6 +28,7 @@ use crate::runtime::core::exec_aten::exec_aten::{DimOrderType, SizesType};
 use crate::runtime::core::exec_aten::util::tensor_util::{
     K_TENSOR_DIMENSION_LIMIT, get_dim_order, resize_tensor,
 };
+use crate::runtime::core::freeable_buffer::FreeableBuffer;
 use crate::runtime::core::portable_type::scalar_type::ScalarType;
 use crate::runtime::core::portable_type::tensor::Tensor;
 use crate::runtime::core::span::Span;
@@ -178,6 +179,17 @@ pub struct XNNExecutor {
     output_ids_: Vec<u32>,
     externals_: Vec<xnn_external_value>,
     packed_data_names_: Vec<String>,
+    // PORT-NOTE (deviation from C++): named-data constant buffers referenced by
+    // the compiled graph. xnnpack.h requires static tensor data to outlive the
+    // Subgraph AND any Runtime created from it, but the C++ compileModel frees
+    // its unpacked_buffers right after xnn_create_runtime — safe upstream only
+    // because upstream AoT routes exclusively *packed* consumers (conv/FC
+    // weights, copied during runtime creation) through named data. Constants
+    // feeding binary/elementwise ops are read by POINTER at invoke time, so
+    // they must live as long as the runtime: the port retains them here and
+    // drops them after `runtime_` (Rust field-order drop: `runtime_` above
+    // drops first).
+    unpacked_buffers_: Vec<FreeableBuffer>,
     workspace_: Arc<XNNWorkspace>,
     // Owned so the cache outlives delete_packed_data in destroy(), even when
     // every other executor sharing it is gone. `None` when no file-backed cache
@@ -205,6 +217,7 @@ impl XNNExecutor {
             output_ids_: Vec::new(),
             externals_: Vec::new(),
             packed_data_names_: Vec::new(),
+            unpacked_buffers_: Vec::new(),
             workspace_: workspace,
             weights_cache_: None,
             in_use_: AtomicBool::new(false),
@@ -297,9 +310,11 @@ impl XNNExecutor {
         input_ids: Vec<u32>,
         output_ids: Vec<u32>,
         packed_data_names: Vec<String>,
+        unpacked_buffers: Vec<FreeableBuffer>,
         enable_profiling: bool,
     ) -> Error {
         self.runtime_ = RuntimePtr(runtime);
+        self.unpacked_buffers_ = unpacked_buffers;
 
         #[cfg(any(
             feature = "xnnpack-profiling",
@@ -900,7 +915,7 @@ mod tests {
         }
 
         assert_eq!(
-            executor.initialize(rt, vec![0], vec![1], vec![], false),
+            executor.initialize(rt, vec![0], vec![1], vec![], vec![], false),
             Error::Ok
         );
 
@@ -1001,7 +1016,7 @@ mod tests {
         }
 
         assert_eq!(
-            executor.initialize(rt, vec![0], vec![1, 2], vec![], false),
+            executor.initialize(rt, vec![0], vec![1, 2], vec![], vec![], false),
             Error::Ok
         );
 

@@ -282,14 +282,8 @@ mod imp {
                 total_time += avg_op_time;
 
                 #[cfg(feature = "xnnpack-profiling")]
-                eprintln!(
-                    ">>, {}, {} ({})",
-                    op_name, self.op_timings_[i], avg_op_time
-                );
-                #[cfg(all(
-                    feature = "profiling-enabled",
-                    not(feature = "xnnpack-profiling")
-                ))]
+                eprintln!(">>, {}, {} ({})", op_name, self.op_timings_[i], avg_op_time);
+                #[cfg(all(feature = "profiling-enabled", not(feature = "xnnpack-profiling")))]
                 crate::et_log!(
                     Info,
                     ">>, {}, {} ({})",
@@ -300,10 +294,7 @@ mod imp {
             }
             #[cfg(feature = "xnnpack-profiling")]
             eprintln!(">>, Total Time, {}", total_time);
-            #[cfg(all(
-                feature = "profiling-enabled",
-                not(feature = "xnnpack-profiling")
-            ))]
+            #[cfg(all(feature = "profiling-enabled", not(feature = "xnnpack-profiling")))]
             crate::et_log!(Info, ">>, Total Time, {}", total_time);
         }
 

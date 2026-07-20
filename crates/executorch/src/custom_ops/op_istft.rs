@@ -41,6 +41,21 @@ fn make_hann_window(window: &mut [f32]) {
     }
 }
 
+/// Minimum frame count (the `chunks` range unit) at which the per-frame FFT
+/// stage is worth dispatching across the pool. Parallelize only once the total
+/// spectral work (`work_size == n_freqs * n_frames`) exceeds ~32k values; below
+/// that the dispatch overhead dominates. Expressed in frames so it matches the
+/// range `chunks` iterates over. Returns `usize::MAX` (never parallelize) for a
+/// degenerate zero-frame input.
+fn par_frame_threshold(work_size: usize, n_frames: usize) -> usize {
+    const PAR_MIN_VALUES: usize = 32 * 1024;
+    if n_frames == 0 {
+        return usize::MAX;
+    }
+    let n_freqs = work_size / n_frames; // == n_fft/2 + 1
+    PAR_MIN_VALUES.div_ceil(n_freqs.max(1))
+}
+
 /// ISTFT: `(real, imag) -> audio`.
 ///
 /// `real`/`imag` are `[B, F, T]` float tensors with `F == n_fft/2 + 1`. `out` is
@@ -109,13 +124,10 @@ pub fn istft_out<'a, 'b>(
         core::slice::from_raw_parts_mut(out.mutable_data_ptr::<f32>(), batch as usize * audio_len)
     };
 
-    // Plan the inverse real FFT once; reuse the plan and its buffers for every
-    // frame. `spectrum` (len n_fft/2+1) holds the half spectrum; `frame_out`
-    // (len n_fft) receives the unnormalized time-domain frame.
+    // Plan the inverse real FFT once. The per-frame inverse FFTs are
+    // independent, so they parallelize; the plan (`Arc<dyn ComplexToReal>`) is
+    // `Sync + Send`, so parallel chunks share it by reference.
     let c2r = RealFftPlanner::<f32>::new().plan_fft_inverse(n_fft);
-    let mut spectrum = c2r.make_input_vec();
-    let mut frame_out = c2r.make_output_vec();
-    let mut scratch = c2r.make_scratch_vec();
 
     let mut window = vec![0.0f32; n_fft];
     make_hann_window(&mut window);
@@ -130,37 +142,70 @@ pub fn istft_out<'a, 'b>(
         let mut window_sum = vec![0.0f32; audio_len];
 
         let base_bf = b * n_freqs * n_frames;
+
+        // Stage 1 (parallelizable): per-frame inverse FFT into `windowed`, a
+        // `n_frames * n_fft` buffer holding each frame already multiplied by
+        // `inv_n * window[i]`. This is exactly the `frame_out[i] * inv_n * w`
+        // term the overlap-add adds, precomputed independently per frame — so
+        // the OLA sum below is bit-identical regardless of parallelism. The
+        // work is dispatched across the shared XNNPACK pool in contiguous frame
+        // chunks (each chunk owns a disjoint `windowed` slice); below the
+        // `par_frame_threshold` frame count it runs serially.
+        let mut windowed = vec![0.0f32; n_frames * n_fft];
+        let work_size = n_freqs * n_frames;
+
+        let windowed_base = windowed.as_mut_ptr() as usize;
+        let fft_ok = std::sync::atomic::AtomicBool::new(true);
+        // The realfft plan (`Arc<dyn ComplexToReal>`) is `Sync + Send`, so chunks
+        // share it by reference.
+        let c2r_ref: &dyn realfft::ComplexToReal<f32> = c2r.as_ref();
+        let window_ref = &window;
+        let ok_ref = &fft_ok;
+        crate::custom_ops::parallel::chunks(n_frames, par_frame_threshold(work_size, n_frames), {
+            move |frame_start, frames| {
+                // SAFETY: `chunks` hands out disjoint frame ranges, so the
+                // `windowed` sub-slice for `[frame_start, frame_start+frames)`
+                // never aliases another chunk's.
+                let off = frame_start * n_fft;
+                let len = frames * n_fft;
+                let chunk = unsafe {
+                    core::slice::from_raw_parts_mut((windowed_base as *mut f32).add(off), len)
+                };
+                if !istft_frames(
+                    c2r_ref,
+                    real_data,
+                    imag_data,
+                    base_bf,
+                    n_freqs,
+                    n_frames,
+                    n_fft,
+                    half_n,
+                    window_ref,
+                    inv_n,
+                    frame_start,
+                    frame_start + frames,
+                    chunk,
+                ) {
+                    ok_ref.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        });
+
+        if !fft_ok.load(std::sync::atomic::Ordering::Relaxed) {
+            ctx.fail(Error::Internal);
+            return out;
+        }
+
+        // Stage 2 (serial): windowed overlap-add + COLA window accumulation.
+        // Cheap (adds only); the overlapping writes make it awkward to
+        // parallelize safely and it is not the hot path.
         for t in 0..n_frames {
-            for f in 0..n_freqs {
-                let idx = base_bf + f * n_frames + t;
-                spectrum[f].re = real_data[idx];
-                spectrum[f].im = imag_data[idx];
-            }
-            // The DC bin (and Nyquist bin, for even n_fft) is self-conjugate:
-            // its imaginary part must be zero for a real signal. Zero it so
-            // realfft does not flag `InputValues`; this matches the C++ pffft
-            // packing, which used the real part only for those bins.
-            spectrum[0].im = 0.0;
-            if n_fft % 2 == 0 {
-                spectrum[half_n].im = 0.0;
-            }
-
-            // `process_with_scratch` uses `spectrum` as scratch (contents are
-            // garbage afterwards); it is refilled at the top of each iteration.
-            if c2r
-                .process_with_scratch(&mut spectrum, &mut frame_out, &mut scratch)
-                .is_err()
-            {
-                ctx.fail(Error::Internal);
-                return out;
-            }
-
-            // Windowed overlap-add.
+            let frame = &windowed[t * n_fft..(t + 1) * n_fft];
             let start = t * hop_length;
             let mut i = 0;
             while i < n_fft && start + i < audio_len {
                 let w = window[i];
-                batch_out[start + i] += frame_out[i] * inv_n * w;
+                batch_out[start + i] += frame[i];
                 window_sum[start + i] += w * w;
                 i += 1;
             }
@@ -187,6 +232,69 @@ pub fn istft_out<'a, 'b>(
     }
 
     out
+}
+
+/// Inverse-FFT a contiguous range of frames `[frame_start, frame_end)` into
+/// `windowed_chunk` (length `(frame_end - frame_start) * n_fft`). Each frame is
+/// scaled by `inv_n * window[i]` in place, so the caller only has to overlap-add
+/// the results. Returns `false` if realfft rejects any frame's input.
+///
+/// Every frame is independent (its own half-spectrum in, its own `n_fft` samples
+/// out), so this runs identically whether called once serially or on disjoint
+/// frame ranges across threads.
+#[allow(clippy::too_many_arguments)]
+fn istft_frames(
+    c2r: &dyn realfft::ComplexToReal<f32>,
+    real_data: &[f32],
+    imag_data: &[f32],
+    base_bf: usize,
+    n_freqs: usize,
+    n_frames: usize,
+    n_fft: usize,
+    half_n: usize,
+    window: &[f32],
+    inv_n: f32,
+    frame_start: usize,
+    frame_end: usize,
+    windowed_chunk: &mut [f32],
+) -> bool {
+    let mut spectrum = c2r.make_input_vec();
+    let mut frame_out = c2r.make_output_vec();
+    let mut scratch = c2r.make_scratch_vec();
+
+    for (local_t, t) in (frame_start..frame_end).enumerate() {
+        for f in 0..n_freqs {
+            let idx = base_bf + f * n_frames + t;
+            spectrum[f].re = real_data[idx];
+            spectrum[f].im = imag_data[idx];
+        }
+        // The DC bin (and Nyquist bin, for even n_fft) is self-conjugate: its
+        // imaginary part must be zero for a real signal. Zero it so realfft does
+        // not flag `InputValues`; matches the C++ pffft packing, which used the
+        // real part only for those bins.
+        spectrum[0].im = 0.0;
+        if n_fft % 2 == 0 {
+            spectrum[half_n].im = 0.0;
+        }
+
+        // `process_with_scratch` uses `spectrum` as scratch (garbage afterwards);
+        // it is refilled at the top of each iteration.
+        if c2r
+            .process_with_scratch(&mut spectrum, &mut frame_out, &mut scratch)
+            .is_err()
+        {
+            return false;
+        }
+
+        // Pre-apply `inv_n * window[i]` so the serial OLA can add directly. Same
+        // left-associative product as the original `frame_out[i] * inv_n * w`.
+        let dst = &mut windowed_chunk[local_t * n_fft..(local_t + 1) * n_fft];
+        for i in 0..n_fft {
+            dst[i] = frame_out[i] * inv_n * window[i];
+        }
+    }
+
+    true
 }
 
 /// `OpFunction` shim: unpacks the EValue stack and calls [`istft_out`]. The
@@ -443,5 +551,34 @@ mod tests {
         assert_eq!(out.size(1) as usize, audio_len);
         let got = unsafe { core::slice::from_raw_parts(out.const_data_ptr::<f32>(), audio_len) };
         assert_close(got, &expected);
+    }
+
+    /// Realistic Vocos-size input (`n_fft = 1024`, hop 256) with enough frames
+    /// that `n_freqs * n_frames` crosses the 32k parallel threshold, exercising
+    /// the multi-threaded per-frame FFT path. Compared against the independent
+    /// closed-form reference. The parallel FFTs write disjoint frame slices and
+    /// the overlap-add stays serial, so the reconstruction matches the serial
+    /// path.
+    #[test]
+    fn istft_parallel_path_matches_reference() {
+        let n_fft = 1024usize;
+        let hop = 256usize;
+        let n_freqs = n_fft / 2 + 1; // 513
+        let n_frames = 80usize; // 513 * 80 = 41_040 > 32k -> parallel path
+
+        let mut real = vec![0.0f32; n_freqs * n_frames];
+        let mut imag = vec![0.0f32; n_freqs * n_frames];
+        let mut seed = 0x0f2e_31a7u32;
+        pseudo_random_fill(&mut real, &mut seed);
+        pseudo_random_fill(&mut imag, &mut seed);
+
+        let expected = istft_reference(&real, &imag, n_fft, hop, n_frames);
+        let got = run_istft(&real, &imag, n_fft, hop, n_frames);
+        assert_eq!(got.len(), expected.len());
+        assert!(
+            got.iter().all(|x| !x.is_nan()),
+            "no NaNs in parallel output"
+        );
+        assert_close(&got, &expected);
     }
 }

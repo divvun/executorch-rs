@@ -793,6 +793,76 @@ unsafe extern "C" {
     /// `pthreadpool_t pthreadpool_create(size_t threads_count)` — `0` sizes the
     /// pool to the number of logical processors.
     fn pthreadpool_create(threads_count: usize) -> pthreadpool_t;
+
+    /// `size_t pthreadpool_get_threads_count(pthreadpool_t)` — worker count
+    /// (including the calling thread).
+    fn pthreadpool_get_threads_count(threadpool: pthreadpool_t) -> usize;
+
+    /// `void pthreadpool_parallelize_1d_tile_1d(pthreadpool_t, task, ctx,
+    /// range, tile, flags)`. Invokes `task(ctx, i, min(range - i, tile))` for
+    /// each tile start `i` in `0..range` step `tile`, spreading tiles across the
+    /// (already-warm) pool workers. Blocks until every tile is done. Reusing the
+    /// process-wide pool avoids the per-call OS-thread spawn/join churn that a
+    /// fresh `std::thread::scope` incurs on each host-kernel invocation.
+    fn pthreadpool_parallelize_1d_tile_1d(
+        threadpool: pthreadpool_t,
+        function: unsafe extern "C" fn(*mut c_void, usize, usize),
+        context: *mut c_void,
+        range: usize,
+        tile: usize,
+        flags: u32,
+    );
+}
+
+/// Number of workers in the process-wide XNNPACK pool (>= 1).
+pub fn pthreadpool_threads() -> usize {
+    let pool = get_pthreadpool();
+    if pool.0.is_null() {
+        return 1;
+    }
+    // SAFETY: `pool` is the linked libpthreadpool singleton.
+    unsafe { pthreadpool_get_threads_count(pool) }.max(1)
+}
+
+/// Trampoline: reconstruct the `&F` closure from `context` and call it with the
+/// tile `[start, start + count)`. `F` must be callable concurrently on disjoint
+/// tiles (`Sync`); the caller guarantees each tile's writes are disjoint.
+unsafe extern "C" fn tile_trampoline<F: Fn(usize, usize) + Sync>(
+    context: *mut c_void,
+    start: usize,
+    count: usize,
+) {
+    // SAFETY: `context` is the `&F` the caller passed to `parallelize_chunks`.
+    let f = unsafe { &*(context as *const F) };
+    f(start, count);
+}
+
+/// Split `range` items into `<= tile`-sized contiguous chunks and run `f(start,
+/// count)` on each, spread across the process-wide XNNPACK thread pool. `tile`
+/// is chosen as `ceil(range / workers)` so there is at most one chunk per worker
+/// (coarse-grained). Blocks until all chunks finish. `f` is called concurrently
+/// on disjoint `[start, start+count)` sub-ranges, so it must only touch data
+/// private to its chunk.
+pub fn parallelize_chunks<F: Fn(usize, usize) + Sync>(range: usize, workers: usize, f: F) {
+    if range == 0 {
+        return;
+    }
+    let pool = get_pthreadpool();
+    let workers = workers.max(1);
+    let tile = range.div_ceil(workers);
+    // SAFETY: `tile_trampoline::<F>` matches the C task signature; `&f` outlives
+    // the (blocking) call, and libpthreadpool serializes chunk completion before
+    // returning, so the borrow is valid for the whole call.
+    unsafe {
+        pthreadpool_parallelize_1d_tile_1d(
+            pool,
+            tile_trampoline::<F>,
+            &f as *const F as *mut c_void,
+            range,
+            tile,
+            0,
+        );
+    }
 }
 
 /// Returns the process-wide shared thread pool, creating it on first use.

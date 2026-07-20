@@ -360,12 +360,7 @@ impl DataLoader for FileDescriptorDataLoader {
             // Reads on macOS will fail with EINVAL if size > INT32_MAX.
             let chunk_size: usize = core::cmp::min(needed, i32::MAX as usize);
             let nread: isize = unsafe {
-                platform_pread(
-                    self.fd_,
-                    buf as *mut core::ffi::c_void,
-                    chunk_size,
-                    offset,
-                )
+                platform_pread(self.fd_, buf as *mut core::ffi::c_void, chunk_size, offset)
             };
             if nread < 0 && errno() == libc::EINTR {
                 // Interrupted by a signal; zero bytes read.

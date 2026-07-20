@@ -391,14 +391,7 @@ impl DataLoader for FileDataLoader {
             // Reads on macOS will fail with EINVAL if size > INT32_MAX.
             let chunk_size: usize = core::cmp::min(needed, i32::MAX as usize);
             let nread: isize = if ET_HAVE_PREAD {
-                unsafe {
-                    platform_pread(
-                        dup_fd,
-                        buf as *mut core::ffi::c_void,
-                        chunk_size,
-                        offset,
-                    )
-                }
+                unsafe { platform_pread(dup_fd, buf as *mut core::ffi::c_void, chunk_size, offset) }
             } else if unsafe { libc::lseek(dup_fd, offset as libc::off_t, libc::SEEK_SET) }
                 == (-1 as libc::off_t)
             {

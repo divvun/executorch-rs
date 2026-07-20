@@ -76,12 +76,56 @@ pub fn layer_norm_out<'a, 'b>(
         bias.map(|b| unsafe { core::slice::from_raw_parts(b.const_data_ptr::<f32>(), norm_size) });
 
     let eps_f = eps as f32;
+    let num_instances = num_instances as usize;
+
+    // Each of the `num_instances` rows normalizes over its own `norm_size`
+    // window and is fully independent, so the row loop parallelizes cleanly over
+    // contiguous row chunks (each chunk writes a disjoint output slice). Below
+    // ~32k total elements the dispatch overhead is not worth it, so
+    // `parallel::chunks` runs a single serial pass — bit-identical to the
+    // pre-parallel path (parallelism only reorders whole rows, never the
+    // arithmetic within a row). The threshold is expressed in rows so it tracks
+    // the actual work (`num_instances * norm_size == numel`).
+    const PAR_MIN_ELEMS: usize = 32 * 1024;
+    let row_threshold = PAR_MIN_ELEMS.div_ceil(norm_size.max(1));
+
+    let in_base = in_data.as_ptr() as usize;
+    let out_base = out_data.as_mut_ptr() as usize;
+    crate::custom_ops::parallel::chunks(num_instances, row_threshold, |row_start, rows| {
+        // SAFETY: `chunks` hands out disjoint `[row_start, row_start+rows)`
+        // ranges, so the sub-slices below never alias across concurrent calls.
+        // Reconstructing them from the base addresses (rather than moving the
+        // borrows) is what lets the closure be `Sync`.
+        let off = row_start * norm_size;
+        let len = rows * norm_size;
+        let in_chunk =
+            unsafe { core::slice::from_raw_parts((in_base as *const f32).add(off), len) };
+        let out_chunk =
+            unsafe { core::slice::from_raw_parts_mut((out_base as *mut f32).add(off), len) };
+        layer_norm_rows(in_chunk, out_chunk, norm_size, gamma, beta, eps_f);
+    });
+
+    out
+}
+
+/// Normalize a contiguous block of rows in place: for each `norm_size`-element
+/// row of `in_data`, write `(x - mean) / sqrt(var + eps) * gamma + beta` to the
+/// matching row of `out_data`. `in_data`/`out_data` hold the same number of
+/// whole rows. Keeps the exact 3-pass f32 mean/var/affine math so results are
+/// bit-identical to the serial path (and to the unit-test reference).
+fn layer_norm_rows(
+    in_data: &[f32],
+    out_data: &mut [f32],
+    norm_size: usize,
+    gamma: Option<&[f32]>,
+    beta: Option<&[f32]>,
+    eps_f: f32,
+) {
     let norm_size_f = norm_size as f32;
-
-    for i in 0..num_instances as usize {
-        let x = &in_data[i * norm_size..(i + 1) * norm_size];
-        let y = &mut out_data[i * norm_size..(i + 1) * norm_size];
-
+    for (x, y) in in_data
+        .chunks_exact(norm_size)
+        .zip(out_data.chunks_exact_mut(norm_size))
+    {
         // Pass 1: mean.
         let mut sum = 0.0f32;
         for &v in x {
@@ -121,8 +165,6 @@ pub fn layer_norm_out<'a, 'b>(
             }
         }
     }
-
-    out
 }
 
 /// `OpFunction` shim: unpacks the EValue stack and calls [`layer_norm_out`].
@@ -316,5 +358,45 @@ mod tests {
         let out = evalues[5].to_tensor();
         let got = unsafe { core::slice::from_raw_parts(out.const_data_ptr::<f32>(), b * t * c) };
         assert_close(got, &expected);
+    }
+
+    /// Large `[1, T, 384]` input that crosses the parallel threshold (T*C well
+    /// over 32k), exercising the multi-threaded row-chunk path. The per-row math
+    /// is unchanged by threading, so the result must be bit-identical to the
+    /// single-threaded reference (exact equality, not just within tolerance).
+    #[test]
+    fn layer_norm_parallel_path_matches_reference() {
+        let (b, t, c) = (1usize, 700usize, 384usize); // 700*384 = 268_800 > 64k
+        let (input, weight, bias) = make_inputs(b, t, c);
+        let eps = 1e-5f32;
+        let expected = layer_norm_reference(&input, c, Some(&weight), Some(&bias), eps);
+
+        let tf = TensorFactory::<f32>::new();
+        let input_t = tf.make_default(vec![b as i32, t as i32, c as i32], input.clone());
+        let weight_t = tf.make_default(vec![c as i32], weight.clone());
+        let bias_t = tf.make_default(vec![c as i32], bias.clone());
+        let out_t = tf.zeros(
+            vec![b as i32, t as i32, c as i32],
+            TensorShapeDynamism::DYNAMIC_BOUND,
+        );
+
+        let ns_vec: Vec<i64> = vec![c as i64];
+        let normalized_shape = ArrayRef::from_raw_parts(ns_vec.as_ptr(), ns_vec.len());
+
+        let mut ctx = context();
+        let result = layer_norm_out(
+            &mut ctx,
+            &input_t,
+            normalized_shape,
+            Some(&weight_t),
+            Some(&bias_t),
+            eps as f64,
+            &out_t,
+        );
+        assert_eq!(ctx.failure_state(), Error::Ok);
+        let got = unsafe { core::slice::from_raw_parts(result.const_data_ptr::<f32>(), b * t * c) };
+        // Bit-identical: parallelism only reorders whole rows, never the
+        // arithmetic within a row.
+        assert_eq!(got, expected.as_slice());
     }
 }

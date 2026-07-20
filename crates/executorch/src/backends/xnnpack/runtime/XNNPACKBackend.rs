@@ -1116,7 +1116,7 @@ mod tests {
         unsafe {
             core::ptr::write(executor, XNNExecutor::new(workspace.clone()));
             assert_eq!(
-                (*executor).initialize(rt, vec![0, 1], vec![2], vec![]),
+                (*executor).initialize(rt, vec![0, 1], vec![2], vec![], vec![], false),
                 Error::Ok
             );
         }
